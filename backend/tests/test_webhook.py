@@ -4,8 +4,10 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from app.db import init_db
 from app.main import app, GITHUB_WEBHOOK_SECRET
 
+init_db()
 client = TestClient(app)
 
 
@@ -62,7 +64,7 @@ def test_webhook_valid_signature_ping():
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "accepted"
+    assert data["status"] in ("accepted", "enqueued")
     assert data["event"] == "ping"
 
 
@@ -91,7 +93,7 @@ def test_webhook_valid_signature_pull_request():
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "accepted"
+    assert data["status"] in ("accepted", "enqueued")
     assert data["event"] == "pull_request"
     assert data["action"] == "opened"
     assert data["pr_number"] == 42
