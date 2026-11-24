@@ -40,7 +40,11 @@ class ScorerConfig(BaseModel):
     l_0: float = 50.0       # Normalization scale factor for LOC
 
 
-def calculate_hunk_risk(metrics: HunkMetrics, config: ScorerConfig = ScorerConfig()) -> float:
+def calculate_hunk_risk(
+    metrics: HunkMetrics,
+    config: ScorerConfig = ScorerConfig(),
+    regression_boost: float = 0.0,
+) -> float:
     """
     Computes deterministic risk score for a single code hunk on a [0.0, 100.0] scale.
 
@@ -50,7 +54,7 @@ def calculate_hunk_risk(metrics: HunkMetrics, config: ScorerConfig = ScorerConfi
         + w_blast * log(1 + fan_in_h)
         + w_cov * (1 - C_h)
         + w_churn * (ΔLOC_h / L_0)
-    )))
+    ))) + regression_boost
     """
     exponent = (
         config.w_dom * metrics.domain_sensitivity
@@ -58,8 +62,10 @@ def calculate_hunk_risk(metrics: HunkMetrics, config: ScorerConfig = ScorerConfi
         + config.w_cov * (1.0 - metrics.coverage)
         + config.w_churn * (metrics.delta_loc / config.l_0)
     )
-    risk = 100.0 * (1.0 - math.exp(-exponent))
-    return round(max(0.0, min(100.0, risk)), 2)
+    base_risk = 100.0 * (1.0 - math.exp(-exponent))
+    bounded_boost = min(30.0, max(0.0, regression_boost))
+    total_risk = base_risk + bounded_boost
+    return round(max(0.0, min(100.0, total_risk)), 2)
 
 
 def aggregate_pr_risk(

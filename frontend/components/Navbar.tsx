@@ -9,6 +9,7 @@ export default function Navbar() {
 
   const links = [
     { href: "/", label: "PR Runs", icon: GitPullRequest },
+    { href: "/risk-debt", label: "Risk Debt Ledger", icon: Activity },
     { href: "/settings", label: "Settings & BYOK", icon: Sliders },
   ];
 

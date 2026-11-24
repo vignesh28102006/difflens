@@ -14,7 +14,48 @@ import {
   Code,
   Layers,
   CheckSquare,
+  Terminal,
+  Zap,
+  GitCompare,
+  TrendingDown,
 } from "lucide-react";
+
+interface CoChangeWarning {
+  changed_file: string;
+  missing_partner: string;
+  coupling_ratio: number;
+  co_change_commits?: string[];
+}
+
+interface InteractionFinding {
+  source_file: string;
+  source_symbol: string;
+  target_file: string;
+  target_symbol: string;
+  interaction_type: string;
+  severity: string;
+  evidence: string;
+}
+
+interface PrioritizedTest {
+  test_file: string;
+  impact_score: number;
+  target_symbols: string[];
+  rationale: string;
+}
+
+interface TestSelection {
+  prioritized_tests: PrioritizedTest[];
+  total_tests_available: number;
+  selected_tests_count: number;
+  estimated_time_reduction_percent: number;
+  runnable_command: string;
+}
+
+interface RegressionSignals {
+  bug_fix_rates?: Record<string, number>;
+  co_change_warnings?: CoChangeWarning[];
+}
 
 interface HunkFinding {
   id: number;
@@ -56,6 +97,9 @@ interface RunDetail {
     hunks_count?: number;
     max_hunk_risk?: number;
     high_risk_hunks?: number;
+    regression_signals?: RegressionSignals;
+    interaction_findings?: InteractionFinding[];
+    test_selection?: TestSelection;
   };
   findings: HunkFinding[];
   created_at: string;
@@ -70,6 +114,7 @@ export default function RunDetailPage() {
   const [run, setRun] = useState<RunDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [copiedCommand, setCopiedCommand] = useState(false);
 
   useEffect(() => {
     if (!runId) return;
@@ -84,6 +129,12 @@ export default function RunDetailPage() {
     navigator.clipboard.writeText(code);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const copyCommand = (cmd: string) => {
+    navigator.clipboard.writeText(cmd);
+    setCopiedCommand(true);
+    setTimeout(() => setCopiedCommand(false), 2000);
   };
 
   if (loading) {
@@ -107,6 +158,10 @@ export default function RunDetailPage() {
     if (score >= 40.0) return "text-amber-400 bg-amber-500/10 border-amber-500/30";
     return "text-emerald-400 bg-emerald-500/10 border-emerald-500/30";
   };
+
+  const testSelection = run.summary?.test_selection;
+  const coChangeWarnings = run.summary?.regression_signals?.co_change_warnings || [];
+  const interactionFindings = run.summary?.interaction_findings || [];
 
   return (
     <div className="space-y-8 pb-12">
@@ -149,6 +204,159 @@ export default function RunDetailPage() {
             <div className="text-xs text-slate-400 mt-1">Aggregated PR Risk Score</div>
           </div>
         </div>
+      </div>
+
+      {/* Change Intelligence & Prioritized CI Selection */}
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-white flex items-center space-x-2">
+            <Zap className="w-5 h-5 text-accent" />
+            <span>Change Intelligence & Prioritized CI Execution</span>
+          </h2>
+          <span className="text-xs font-mono text-slate-400">
+            Deterministic blast-radius & git history signals
+          </span>
+        </div>
+
+        {/* Prioritized CI Test Selection Card */}
+        {testSelection && testSelection.runnable_command && (
+          <div className="bg-surface rounded-xl border border-border p-6 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 rounded-lg bg-accent/10 border border-accent/30 text-accent">
+                  <Terminal className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Risk-Weighted Test Selection</h3>
+                  <p className="text-xs text-slate-400">
+                    Runs only tests covering modified symbols and their upstream callers, sorted by impact.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-3 text-xs font-mono">
+                <span className="px-2.5 py-1 rounded bg-background border border-border text-slate-300">
+                  {testSelection.selected_tests_count} of {testSelection.total_tests_available} tests
+                </span>
+                <span className="px-2.5 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-semibold flex items-center space-x-1">
+                  <TrendingDown className="w-3.5 h-3.5" />
+                  <span>~{testSelection.estimated_time_reduction_percent}% time saved</span>
+                </span>
+              </div>
+            </div>
+
+            {/* Runnable Command Box */}
+            <div className="relative">
+              <pre className="p-3.5 pr-24 rounded-lg bg-[#05070A] border border-border text-xs font-mono text-emerald-300 overflow-x-auto">
+                <code>{testSelection.runnable_command}</code>
+              </pre>
+              <button
+                onClick={() => copyCommand(testSelection.runnable_command)}
+                className="absolute right-2.5 top-2.5 inline-flex items-center space-x-1.5 px-2.5 py-1 rounded bg-surface border border-border text-xs font-mono text-slate-300 hover:text-accent hover:border-accent/40 transition-colors"
+              >
+                {copiedCommand ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="text-emerald-400">Copied</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy CI Command</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Test Breakdown Details */}
+            {testSelection.prioritized_tests && testSelection.prioritized_tests.length > 0 && (
+              <div className="space-y-2 pt-2">
+                <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                  Prioritized Test Targets
+                </div>
+                <div className="grid gap-2">
+                  {testSelection.prioritized_tests.map((t, idx) => (
+                    <div
+                      key={idx}
+                      className="p-3 rounded-lg bg-background border border-border flex flex-col md:flex-row md:items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="space-y-1">
+                        <div className="font-mono text-slate-200 font-semibold">{t.test_file}</div>
+                        <div className="text-slate-400 text-[11px]">{t.rationale}</div>
+                      </div>
+                      <div className="flex items-center space-x-2 font-mono">
+                        <span className="px-2 py-0.5 rounded bg-surface border border-border text-slate-300">
+                          impact: {t.impact_score.toFixed(1)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Broken Co-Change Warnings */}
+        {coChangeWarnings.length > 0 && (
+          <div className="p-5 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-3">
+            <div className="flex items-center space-x-2 text-amber-400 font-bold text-sm">
+              <AlertTriangle className="w-4 h-4" />
+              <span>Broken Temporal Co-Change Coupling Warnings</span>
+            </div>
+            <p className="text-xs text-slate-300">
+              The following files have historically changed together in bug-fix commits but were omitted from this PR:
+            </p>
+            <div className="space-y-2">
+              {coChangeWarnings.map((w, idx) => (
+                <div
+                  key={idx}
+                  className="p-3 rounded-lg bg-[#0B1020] border border-amber-500/20 flex flex-col md:flex-row md:items-center justify-between gap-2 text-xs"
+                >
+                  <div>
+                    <span className="font-mono text-slate-200 font-semibold">{w.changed_file}</span>
+                    <span className="text-slate-400"> is coupled with </span>
+                    <span className="font-mono text-amber-400 font-bold">{w.missing_partner}</span>
+                  </div>
+                  <div className="flex items-center space-x-2 font-mono text-[11px]">
+                    <span className="px-2 py-0.5 rounded bg-background border border-border text-amber-300">
+                      {Math.round(w.coupling_ratio * 100)}% coupling in {w.co_change_commits?.length || 0} fix commit(s)
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Cross-File Interaction Alerts */}
+        {interactionFindings.length > 0 && (
+          <div className="p-5 rounded-xl bg-red-500/10 border border-red-500/30 space-y-3">
+            <div className="flex items-center space-x-2 text-red-400 font-bold text-sm">
+              <GitCompare className="w-4 h-4" />
+              <span>Cross-File Interaction & Signature Drift Alerts</span>
+            </div>
+            <div className="grid gap-3">
+              {interactionFindings.map((i, idx) => (
+                <div
+                  key={idx}
+                  className="p-3.5 rounded-lg bg-[#0B1020] border border-red-500/20 space-y-2 text-xs"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-slate-200 font-semibold">
+                      {i.source_file} : <span className="text-accent">{i.source_symbol}</span> &rarr; {i.target_file} : <span className="text-slate-300">{i.target_symbol}</span>
+                    </span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-red-500/20 border border-red-500/40 text-red-400 uppercase">
+                      {i.severity} • {i.interaction_type.replace("_", " ")}
+                    </span>
+                  </div>
+                  <p className="text-slate-300 leading-relaxed font-mono text-[11px]">
+                    {i.evidence}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Findings Section */}

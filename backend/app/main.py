@@ -285,3 +285,98 @@ def update_repo_settings(
     db.commit()
     db.refresh(repo)
     return repo.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Risk Debt Ledger API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/repos/{repo_id}/risk-debt", tags=["Risk Debt"])
+def get_repo_risk_debt(
+    repo_id: int,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    repo = db.query(Repository).filter(Repository.id == repo_id).first()
+    if not repo:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+
+    runs = db.query(PRAnalysisRun).filter(PRAnalysisRun.repo_id == repo_id).all()
+    run_ids = [r.id for r in runs]
+
+    dist = {"High": 0, "Medium": 0, "Low": 0}
+    for r in runs:
+        if r.risk_level in dist:
+            dist[r.risk_level] += 1
+
+    avg_score = round(sum(r.overall_score for r in runs) / len(runs), 1) if runs else 0.0
+
+    findings = (
+        db.query(HunkRiskFinding)
+        .filter(HunkRiskFinding.run_id.in_(run_ids))
+        .all()
+        if run_ids
+        else []
+    )
+
+    # Hotspot aggregation by (file_path, symbol_name)
+    hotspots_map: Dict[tuple, list] = {}
+    for f in findings:
+        key = (f.file_path, f.symbol_name)
+        if key not in hotspots_map:
+            hotspots_map[key] = []
+        hotspots_map[key].append(f)
+
+    recurring_hotspots = []
+    chronic_coverage_gaps = []
+
+    for (file_path, symbol_name), f_list in hotspots_map.items():
+        scores = [f.risk_score for f in f_list]
+        max_s = max(scores)
+        avg_s = round(sum(scores) / len(scores), 1)
+        tags = list({t for f in f_list for t in f.domain_tags})
+
+        recurring_hotspots.append({
+            "file_path": file_path,
+            "symbol_name": symbol_name,
+            "occurrences": len(f_list),
+            "max_risk_score": max_s,
+            "avg_risk_score": avg_s,
+            "domain_tags": tags,
+        })
+
+        # Chronic coverage gaps: low coverage (< 50%) on medium/high risk touchpoints
+        uncovered_instances = [f for f in f_list if f.coverage_score < 0.5 and f.risk_score >= repo.risk_threshold_medium]
+        if uncovered_instances:
+            chronic_coverage_gaps.append({
+                "file_path": file_path,
+                "symbol_name": symbol_name,
+                "uncovered_occurrences": len(uncovered_instances),
+                "latest_coverage": uncovered_instances[-1].coverage_score,
+                "latest_risk": uncovered_instances[-1].risk_score,
+            })
+
+    recurring_hotspots.sort(key=lambda x: (x["occurrences"], x["max_risk_score"]), reverse=True)
+    chronic_coverage_gaps.sort(key=lambda x: (x["uncovered_occurrences"], x["latest_risk"]), reverse=True)
+
+    recent_runs = [
+        {
+            "id": r.id,
+            "pr_number": r.pr_number,
+            "head_sha": r.head_sha[:7],
+            "overall_score": r.overall_score,
+            "risk_level": r.risk_level,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in sorted(runs, key=lambda x: x.id, reverse=True)[:10]
+    ]
+
+    return {
+        "repo_id": repo.id,
+        "repo_full_name": repo.full_name,
+        "total_runs": len(runs),
+        "risk_distribution": dist,
+        "avg_repo_score": avg_score,
+        "recurring_hotspots": recurring_hotspots[:10],
+        "chronic_coverage_gaps": chronic_coverage_gaps[:10],
+        "recent_runs": recent_runs,
+    }

@@ -71,6 +71,8 @@ class Explainer:
         coverage_score: float,
         uncovered_lines: List[int],
         diff_patch: str,
+        co_change_evidence: Optional[List[str]] = None,
+        interaction_evidence: Optional[List[str]] = None,
     ) -> HunkExplanation:
         """
         Generates structured HunkExplanation without altering risk_score.
@@ -78,7 +80,8 @@ class Explainer:
         # 1. Check if provider is explicit 'none'
         if self.provider == "none":
             return self._deterministic_fallback(
-                file_path, symbol_name, risk_score, domain_tags, fan_in, callers, coverage_score, uncovered_lines, diff_patch
+                file_path, symbol_name, risk_score, domain_tags, fan_in, callers, coverage_score, uncovered_lines, diff_patch,
+                co_change_evidence, interaction_evidence
             )
 
         # 2. Try Gemini BYOK
@@ -87,7 +90,8 @@ class Explainer:
             if key:
                 try:
                     return self._call_gemini(
-                        key, file_path, symbol_name, risk_score, domain_tags, fan_in, callers, coverage_score, uncovered_lines, diff_patch
+                        key, file_path, symbol_name, risk_score, domain_tags, fan_in, callers, coverage_score, uncovered_lines, diff_patch,
+                        co_change_evidence, interaction_evidence
                     )
                 except Exception as e:
                     logger.warning("Gemini explanation failed, falling back to deterministic template: %s", e)
@@ -105,7 +109,8 @@ class Explainer:
 
         # 4. Deterministic fallback
         return self._deterministic_fallback(
-            file_path, symbol_name, risk_score, domain_tags, fan_in, callers, coverage_score, uncovered_lines, diff_patch
+            file_path, symbol_name, risk_score, domain_tags, fan_in, callers, coverage_score, uncovered_lines, diff_patch,
+            co_change_evidence, interaction_evidence
         )
 
     def _call_gemini(
@@ -120,12 +125,17 @@ class Explainer:
         coverage_score: float,
         uncovered_lines: List[int],
         diff_patch: str,
+        co_change_evidence: Optional[List[str]] = None,
+        interaction_evidence: Optional[List[str]] = None,
     ) -> HunkExplanation:
         from google import genai
         from google.genai import types
 
         model_name = self.model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         client = genai.Client(api_key=api_key)
+
+        co_change_str = "\n".join(f"- {e}" for e in (co_change_evidence or []))
+        interaction_str = "\n".join(f"- {e}" for e in (interaction_evidence or []))
 
         prompt = f"""
 You are DiffLens, an automated code risk analyzer. Explain this risky code hunk for a pull request review.
@@ -138,12 +148,19 @@ CODE INFORMATION:
 - Blast Radius (fan-in): {fan_in} callers ({', '.join(callers[:5]) if callers else 'None'})
 - Test Coverage: {int(coverage_score * 100)}% (Uncovered lines: {uncovered_lines[:10]})
 
+CHANGE INTELLIGENCE SIGNALS:
+- Co-Change Warnings:
+{co_change_str or 'None detected'}
+- Cross-File Interaction Alerts:
+{interaction_str or 'None detected'}
+
 DIFF PATCH:
 ```
 {diff_patch[:2000]}
 ```
 
 Provide a structured, developer-focused explanation conforming strictly to the requested JSON schema.
+Reference the concrete co-change / interaction evidence if present.
 Ensure your suggested test code is a complete, runnable test stub.
 """
         response = client.models.generate_content(
@@ -209,6 +226,8 @@ Diff:
         coverage_score: float,
         uncovered_lines: List[int],
         diff_patch: str,
+        co_change_evidence: Optional[List[str]] = None,
+        interaction_evidence: Optional[List[str]] = None,
     ) -> HunkExplanation:
         """
         Pure deterministic fallback with zero remote calls.
@@ -226,6 +245,12 @@ Diff:
 
         # Why it's risky
         risk_points = []
+        if co_change_evidence:
+            for ce in co_change_evidence:
+                risk_points.append(ce)
+        if interaction_evidence:
+            for ie in interaction_evidence:
+                risk_points.append(ie)
         if "auth" in domain_tags:
             risk_points.append("touches authentication/session tokens where security regressions allow unauthorized access")
         if "database" in domain_tags:

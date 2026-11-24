@@ -8,9 +8,12 @@ from app.coverage_mapper import compute_hunk_coverage
 from app.db import SessionLocal
 from app.explainer import create_explainer_for_repo
 from app.github_reporter import post_or_update_pr_report
+from app.interaction_analyzer import InteractionAnalyzer
 from app.models import HunkRiskFinding, PRAnalysisRun, Repository
 from app.queue import get_redis_client, pop_pr_job
+from app.regression_miner import RegressionMiner
 from app.scorer import aggregate_pr_risk, calculate_hunk_risk
+from app.test_selector import TestSelector
 
 logger = logging.getLogger("difflens.worker")
 
@@ -57,7 +60,19 @@ def process_pr_job(
                 )
             )
 
-        # 1. AST Analysis
+        # 1. Historical Regression Mining
+        regression_miner = RegressionMiner()
+        repo_path = job_payload.get("repo_path")
+        commits_data = job_payload.get("commits")
+        reg_result = regression_miner.analyze(
+            changed_files=changed_files,
+            commits=commits_data,
+            repo_path=repo_path,
+        )
+        risk_boosts_by_file = reg_result.risk_boosts_by_file
+        co_change_warnings = reg_result.co_change_warnings
+
+        # 2. AST Analysis
         ast_analyzer = ASTAnalyzer()
         hunk_analyses = ast_analyzer.analyze_pr_files(
             changed_files=changed_files,
@@ -69,7 +84,7 @@ def process_pr_job(
         hunk_scores: List[float] = []
         created_findings: List[HunkRiskFinding] = []
 
-        # 2. Coverage & Scoring per Hunk
+        # 3. Coverage & Scoring per Hunk (with regression boost)
         for hunk, analysis in zip(diff_hunks, hunk_analyses):
             hunk_lines = list(range(hunk.start_line, hunk.end_line + 1))
             symbol_names = [s.symbol_name for s in analysis.symbols]
@@ -87,7 +102,8 @@ def process_pr_job(
                 coverage=cov_res.coverage_score,
                 delta_loc=len(hunk.added_lines) if hunk.added_lines else max(1, hunk.end_line - hunk.start_line + 1),
             )
-            risk_score = calculate_hunk_risk(hunk_metrics)
+            reg_boost = risk_boosts_by_file.get(hunk.file_path, 0.0)
+            risk_score = calculate_hunk_risk(hunk_metrics, regression_boost=reg_boost)
             hunk_scores.append(risk_score)
 
             primary_symbol = analysis.symbols[0].qualified_name if analysis.symbols else "<module>"
@@ -111,7 +127,26 @@ def process_pr_job(
             session.add(finding)
             created_findings.append(finding)
 
-        # 3. Explainer (strictly for rationale/tests, zero change to scores)
+        # 4. Cross-File Change Interaction Analysis
+        interaction_analyzer = InteractionAnalyzer(ast_analyzer=ast_analyzer)
+        interaction_findings = interaction_analyzer.analyze_interactions(
+            changed_files=changed_files,
+            base_contents=job_payload.get("base_contents", {}),
+            head_contents=file_contents,
+            repo_snapshot=repo_snapshot,
+        )
+
+        # 5. Risk-Weighted Test Selection
+        test_selector = TestSelector()
+        changed_symbols_with_risk = [
+            (f.symbol_name, f.risk_score, f.fan_in) for f in created_findings
+        ]
+        test_selection = test_selector.select_tests(
+            changed_symbols_with_risk=changed_symbols_with_risk,
+            repo_snapshot=repo_snapshot,
+        )
+
+        # 6. Explainer (strictly for rationale/tests, zero change to scores)
         repo = session.query(Repository).filter(Repository.id == run.repo_id).first()
         medium_threshold = repo.risk_threshold_medium if repo else 40.0
         flagged_findings = [f for f in created_findings if f.risk_score >= medium_threshold]
@@ -121,6 +156,16 @@ def process_pr_job(
             explainer = create_explainer_for_repo(repo)
             for f in flagged_findings[:5]:  # Capped at top 5 hunks
                 try:
+                    # Gather co-change & interaction evidence for this file/symbol
+                    f_co_change = [
+                        f"Missing coupled file `{w.missing_partner}` ({int(w.coupling_ratio * 100)}% historical co-change rate in bug fixes)"
+                        for w in co_change_warnings if w.target_file == f.file_path
+                    ]
+                    f_interaction = [
+                        f"[{i.severity}] {i.interaction_type}: {i.evidence}"
+                        for i in interaction_findings if i.file_path == f.file_path or i.source_symbol == f.symbol_name
+                    ]
+
                     exp = explainer.explain(
                         file_path=f.file_path,
                         symbol_name=f.symbol_name,
@@ -132,12 +177,14 @@ def process_pr_job(
                         coverage_score=f.coverage_score,
                         uncovered_lines=f.uncovered_lines,
                         diff_patch=f.diff_patch,
+                        co_change_evidence=f_co_change,
+                        interaction_evidence=f_interaction,
                     )
                     f.explanation = exp.model_dump_json()
                 except Exception as exp_err:
                     logger.warning("Explanation generation failed for finding %s: %s", f.symbol_name, exp_err)
 
-        # 4. Aggregate PR Score
+        # 7. Aggregate PR Score
         overall_score = aggregate_pr_risk(hunk_scores)
         risk_level = (
             "High"
@@ -155,19 +202,38 @@ def process_pr_job(
             "hunks_count": len(hunk_scores),
             "max_hunk_risk": max(hunk_scores) if hunk_scores else 0.0,
             "high_risk_hunks": sum(1 for s in hunk_scores if s >= (repo.risk_threshold_high if repo else 70.0)),
+            "co_change_warnings": [
+                {
+                    "target_file": w.target_file,
+                    "missing_partner": w.missing_partner,
+                    "coupling_ratio": w.coupling_ratio,
+                    "supporting_commits": w.supporting_commits,
+                }
+                for w in co_change_warnings
+            ],
+            "interaction_findings": [i.to_dict() for i in interaction_findings],
+            "test_selection": test_selection.to_dict(),
         }
 
         session.commit()
         session.refresh(run)
 
-        # 5. GitHub PR Comment Reporting
+        # 8. GitHub PR Comment Reporting
         if repo:
             try:
-                post_or_update_pr_report(run, created_findings, repo)
+                post_or_update_pr_report(
+                    run,
+                    created_findings,
+                    repo,
+                    co_change_warnings=co_change_warnings,
+                    interaction_findings=interaction_findings,
+                    test_selection=test_selection.to_dict(),
+                )
             except Exception as rep_err:
                 logger.warning("GitHub PR reporting error: %s", rep_err)
 
         logger.info("Completed analysis for run #%s: score=%.2f (%s)", run.id, overall_score, risk_level)
+        return run
         return run
 
     except Exception as exc:

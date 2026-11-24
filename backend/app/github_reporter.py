@@ -19,6 +19,9 @@ def render_pr_markdown_report(
     run: PRAnalysisRun,
     findings: List[HunkRiskFinding],
     repo: Repository,
+    co_change_warnings: Optional[List[Any]] = None,
+    interaction_findings: Optional[List[Any]] = None,
+    test_selection: Optional[Any] = None,
 ) -> str:
     """
     Renders a scannable, developer-friendly Markdown report for GitHub PR comments.
@@ -29,6 +32,11 @@ def render_pr_markdown_report(
     risk_badge = "🔴 HIGH RISK" if run.risk_level == "High" else "🟡 MEDIUM RISK" if run.risk_level == "Medium" else "🟢 LOW RISK"
     flagged_findings = [f for f in findings if f.risk_score >= repo.risk_threshold_medium]
 
+    summary_data = run.summary_json or {}
+    co_changes = co_change_warnings if co_change_warnings is not None else summary_data.get("co_change_warnings", [])
+    interactions = interaction_findings if interaction_findings is not None else summary_data.get("interaction_findings", [])
+    test_sel = test_selection if test_selection is not None else summary_data.get("test_selection")
+
     lines = [
         marker,
         f"## 🔍 DiffLens Risk Analysis — PR #{run.pr_number}",
@@ -38,6 +46,51 @@ def render_pr_markdown_report(
         f"| **{risk_badge}** | **`{run.overall_score:.1f} / 100`** | **`{len(flagged_findings)}`** | **`{len(findings)}`** |",
         "",
     ]
+
+    # Prioritized CI Test Selection
+    if test_sel and test_sel.get("command"):
+        lines.extend([
+            "### ⚡ Prioritized CI Test Selection",
+            f"> **{test_sel.get('reduction_summary', 'Prioritized test subset')}**",
+            "",
+            "```bash",
+            test_sel.get("command"),
+            "```",
+            "",
+        ])
+
+    # Broken Co-Change Warnings
+    if co_changes:
+        lines.extend([
+            "### 🚨 Broken Co-Change Warnings",
+            "Historical bug-fix analysis detected coupled files that were omitted from this PR:",
+            "",
+            "| Target Modified File | Missing Coupled Partner | Historical Bug Coupling | Evidence Commits |",
+            "| :--- | :--- | :---: | :--- |",
+        ])
+        for cc in co_changes:
+            target = cc.get("target_file") if isinstance(cc, dict) else getattr(cc, "target_file", "")
+            partner = cc.get("missing_partner") if isinstance(cc, dict) else getattr(cc, "missing_partner", "")
+            ratio = cc.get("coupling_ratio") if isinstance(cc, dict) else getattr(cc, "coupling_ratio", 0.0)
+            supports = cc.get("supporting_commits") if isinstance(cc, dict) else getattr(cc, "supporting_commits", [])
+            evidence_str = ", ".join(f"`{s.split(':')[0]}`" for s in supports[:3]) if supports else "Multiple bug commits"
+            lines.append(f"| `{target}` | ⚠️ **`{partner}`** | **{int(ratio * 100)}%** | {evidence_str} |")
+        lines.append("")
+
+    # Cross-File Interaction Alerts
+    if interactions:
+        lines.extend([
+            "### 🔗 Cross-File Interaction Alerts",
+            "AST contract and call-chain analysis flagged cross-file boundary risks:",
+            "",
+        ])
+        for inter in interactions:
+            itype = inter.get("interaction_type") if isinstance(inter, dict) else getattr(inter, "interaction_type", "")
+            sev = inter.get("severity") if isinstance(inter, dict) else getattr(inter, "severity", "MEDIUM")
+            evidence = inter.get("evidence") if isinstance(inter, dict) else getattr(inter, "evidence", "")
+            icon = "🔴" if sev == "HIGH" else "🟡"
+            lines.append(f"- {icon} **[{sev}] `{itype}`**: {evidence}")
+        lines.append("")
 
     if flagged_findings:
         lines.extend([
