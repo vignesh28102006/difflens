@@ -23,6 +23,7 @@ import {
   Workflow,
   Radio,
 } from "lucide-react";
+import BlastRadiusGraph from "@/components/BlastRadiusGraph";
 
 interface CoChangeWarning {
   changed_file: string;
@@ -251,6 +252,14 @@ export default function RunDetailPage() {
             Runtime-verified blast radius & deployment impact
           </span>
         </div>
+
+        {/* Interactive Blast-Radius & Service Impact Graph */}
+        <BlastRadiusGraph
+          findings={run.findings}
+          coChangeWarnings={coChangeWarnings}
+          interactionFindings={interactionFindings}
+          deploymentImpact={deploymentImpact}
+        />
 
         {/* Lightweight Deployment Impact Forecast Card */}
         {deploymentImpact && (

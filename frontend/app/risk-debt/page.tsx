@@ -14,6 +14,7 @@ import {
   FileCode,
   ShieldAlert,
 } from "lucide-react";
+import RiskTrendCharts from "@/components/RiskTrendCharts";
 
 interface Repository {
   id: number;
@@ -34,9 +35,18 @@ interface ChronicCoverageGap {
   latest_coverage: number;
 }
 
+interface RecentRun {
+  id: number;
+  pr_number: number;
+  head_sha: string;
+  overall_score: number;
+  risk_level: string;
+  created_at: string | null;
+}
+
 interface RiskDebtReport {
   repo_id: number;
-  repo_name: string;
+  repo_full_name?: string;
   total_runs: number;
   avg_repo_score: number;
   risk_distribution: {
@@ -46,6 +56,7 @@ interface RiskDebtReport {
   };
   recurring_hotspots: RecurringHotspot[];
   chronic_coverage_gaps: ChronicCoverageGap[];
+  recent_runs?: RecentRun[];
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -161,6 +172,12 @@ export default function RiskDebtPage() {
               <div className="text-[11px] text-slate-500 mt-0.5">Controlled or low blast radius</div>
             </div>
           </div>
+
+          {/* Interactive Risk Velocity & Distribution Charts */}
+          <RiskTrendCharts
+            recentRuns={debtReport.recent_runs || []}
+            distribution={debtReport.risk_distribution}
+          />
 
           {/* Hotspots & Gaps Split */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

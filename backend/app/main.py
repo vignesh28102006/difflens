@@ -136,6 +136,21 @@ async def handle_github_webhook(
             content={"status": "accepted", "event": "ping", "message": "Pong"},
         )
 
+    if x_github_event in ("installation", "installation_repositories"):
+        installation_id = payload.get("installation", {}).get("id")
+        repos_list = payload.get("repositories", []) or payload.get("repositories_added", [])
+        registered = []
+        for item in repos_list:
+            r_name = item.get("full_name")
+            r_id = item.get("id")
+            if r_name:
+                get_or_create_repo(db, full_name=r_name, github_repo_id=r_id, installation_id=installation_id)
+                registered.append(r_name)
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"status": "repositories_synced", "event": x_github_event, "registered": registered},
+        )
+
     if x_github_event == "pull_request":
         # Delivery idempotency check (Redis + DB)
         redis_conn = get_redis()
