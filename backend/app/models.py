@@ -13,6 +13,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, relationship
 
+from app.crypto import decrypt_secret, mask_secret
+
 Base = declarative_base()
 
 
@@ -25,6 +27,9 @@ class Repository(Base):
     installation_id = Column(BigInteger, nullable=True)
     risk_threshold_high = Column(Float, default=70.0, nullable=False)
     risk_threshold_medium = Column(Float, default=40.0, nullable=False)
+    llm_provider = Column(String(50), default="gemini", nullable=False)  # "gemini", "ollama", "none"
+    llm_model = Column(String(100), nullable=True)
+    encrypted_api_key = Column(Text, nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -34,6 +39,11 @@ class Repository(Base):
     runs = relationship("PRAnalysisRun", back_populates="repository", cascade="all, delete-orphan")
 
     def to_dict(self) -> Dict[str, Any]:
+        masked_key = None
+        if self.encrypted_api_key:
+            decrypted = decrypt_secret(self.encrypted_api_key)
+            masked_key = mask_secret(decrypted)
+
         return {
             "id": self.id,
             "github_repo_id": self.github_repo_id,
@@ -41,6 +51,10 @@ class Repository(Base):
             "installation_id": self.installation_id,
             "risk_threshold_high": self.risk_threshold_high,
             "risk_threshold_medium": self.risk_threshold_medium,
+            "llm_provider": self.llm_provider,
+            "llm_model": self.llm_model,
+            "has_api_key": bool(self.encrypted_api_key),
+            "masked_api_key": masked_key,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

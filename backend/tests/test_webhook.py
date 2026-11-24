@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import uuid
 import pytest
 from fastapi.testclient import TestClient
 
@@ -88,7 +89,7 @@ def test_webhook_valid_signature_pull_request():
             "Content-Type": "application/json",
             "X-GitHub-Event": "pull_request",
             "X-Hub-Signature-256": sig,
-            "X-GitHub-Delivery": "delivery-pr-42",
+            "X-GitHub-Delivery": f"delivery-pr-42-{uuid.uuid4()}",
         },
     )
     assert response.status_code == 200

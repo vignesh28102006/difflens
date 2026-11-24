@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 from app.ast_analyzer import ASTAnalyzer, DiffHunk
 from app.coverage_mapper import compute_hunk_coverage
 from app.db import SessionLocal
-from app.models import HunkRiskFinding, PRAnalysisRun
+from app.explainer import create_explainer_for_repo
+from app.github_reporter import post_or_update_pr_report
+from app.models import HunkRiskFinding, PRAnalysisRun, Repository
 from app.queue import get_redis_client, pop_pr_job
 from app.scorer import aggregate_pr_risk, calculate_hunk_risk
 
@@ -65,6 +67,7 @@ def process_pr_job(
         )
 
         hunk_scores: List[float] = []
+        created_findings: List[HunkRiskFinding] = []
 
         # 2. Coverage & Scoring per Hunk
         for hunk, analysis in zip(diff_hunks, hunk_analyses):
@@ -106,14 +109,41 @@ def process_pr_job(
                 diff_patch=hunk.hunk_content or "\n".join(hunk.added_lines),
             )
             session.add(finding)
+            created_findings.append(finding)
 
-        # 3. Aggregate PR Score
+        # 3. Explainer (strictly for rationale/tests, zero change to scores)
+        repo = session.query(Repository).filter(Repository.id == run.repo_id).first()
+        medium_threshold = repo.risk_threshold_medium if repo else 40.0
+        flagged_findings = [f for f in created_findings if f.risk_score >= medium_threshold]
+        flagged_findings.sort(key=lambda f: f.risk_score, reverse=True)
+
+        if flagged_findings and repo:
+            explainer = create_explainer_for_repo(repo)
+            for f in flagged_findings[:5]:  # Capped at top 5 hunks
+                try:
+                    exp = explainer.explain(
+                        file_path=f.file_path,
+                        symbol_name=f.symbol_name,
+                        risk_score=f.risk_score,
+                        domain_score=f.domain_score,
+                        domain_tags=f.domain_tags,
+                        fan_in=f.fan_in,
+                        callers=f.callers,
+                        coverage_score=f.coverage_score,
+                        uncovered_lines=f.uncovered_lines,
+                        diff_patch=f.diff_patch,
+                    )
+                    f.explanation = exp.model_dump_json()
+                except Exception as exp_err:
+                    logger.warning("Explanation generation failed for finding %s: %s", f.symbol_name, exp_err)
+
+        # 4. Aggregate PR Score
         overall_score = aggregate_pr_risk(hunk_scores)
         risk_level = (
             "High"
-            if overall_score >= 70.0
+            if overall_score >= (repo.risk_threshold_high if repo else 70.0)
             else "Medium"
-            if overall_score >= 40.0
+            if overall_score >= medium_threshold
             else "Low"
         )
 
@@ -124,11 +154,19 @@ def process_pr_job(
         run.summary_json = {
             "hunks_count": len(hunk_scores),
             "max_hunk_risk": max(hunk_scores) if hunk_scores else 0.0,
-            "high_risk_hunks": sum(1 for s in hunk_scores if s >= 70.0),
+            "high_risk_hunks": sum(1 for s in hunk_scores if s >= (repo.risk_threshold_high if repo else 70.0)),
         }
 
         session.commit()
         session.refresh(run)
+
+        # 5. GitHub PR Comment Reporting
+        if repo:
+            try:
+                post_or_update_pr_report(run, created_findings, repo)
+            except Exception as rep_err:
+                logger.warning("GitHub PR reporting error: %s", rep_err)
+
         logger.info("Completed analysis for run #%s: score=%.2f (%s)", run.id, overall_score, risk_level)
         return run
 

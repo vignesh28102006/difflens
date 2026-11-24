@@ -6,9 +6,12 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.crypto import encrypt_secret
 from app.db import get_db, get_or_create_repo, init_db
 from app.models import HunkRiskFinding, PRAnalysisRun, Repository
 from app.queue import enqueue_pr_job, get_redis_client, is_delivery_duplicate
@@ -22,6 +25,14 @@ app = FastAPI(
     title="DiffLens Webhook Ingress & API",
     version="0.2.0",
     description="Deterministic code risk analyzer webhook ingress & PR inspection API",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Optional dependency overrides for hermetic testing and local dev fallback
@@ -224,3 +235,53 @@ def get_run(
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return run.to_dict(include_findings=True)
+
+
+# ---------------------------------------------------------------------------
+# Repository & BYOK Settings API
+# ---------------------------------------------------------------------------
+
+class RepoSettingsUpdate(BaseModel):
+    risk_threshold_medium: Optional[float] = None
+    risk_threshold_high: Optional[float] = None
+    llm_provider: Optional[str] = None  # "gemini", "ollama", "none"
+    llm_model: Optional[str] = None
+    api_key: Optional[str] = None
+    clear_api_key: Optional[bool] = False
+
+
+@app.get("/api/repos", tags=["Repositories"])
+def list_repositories(
+    db: Session = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    repos = db.query(Repository).order_by(Repository.id.asc()).all()
+    return [r.to_dict() for r in repos]
+
+
+@app.patch("/api/repos/{repo_id}/settings", tags=["Repositories"])
+def update_repo_settings(
+    repo_id: int,
+    payload: RepoSettingsUpdate,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    repo = db.query(Repository).filter(Repository.id == repo_id).first()
+    if not repo:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+
+    if payload.risk_threshold_medium is not None:
+        repo.risk_threshold_medium = float(payload.risk_threshold_medium)
+    if payload.risk_threshold_high is not None:
+        repo.risk_threshold_high = float(payload.risk_threshold_high)
+    if payload.llm_provider is not None:
+        repo.llm_provider = payload.llm_provider.strip().lower()
+    if payload.llm_model is not None:
+        repo.llm_model = payload.llm_model.strip() or None
+
+    if payload.clear_api_key:
+        repo.encrypted_api_key = None
+    elif payload.api_key is not None and payload.api_key.strip():
+        repo.encrypted_api_key = encrypt_secret(payload.api_key.strip())
+
+    db.commit()
+    db.refresh(repo)
+    return repo.to_dict()

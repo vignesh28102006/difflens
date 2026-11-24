@@ -36,5 +36,7 @@ out/
 .venv
 venv/
 ENV/
+*.db
+*.sqlite*
 *.DS_Store
 Thumbs.db
