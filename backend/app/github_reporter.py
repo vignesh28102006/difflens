@@ -22,6 +22,7 @@ def render_pr_markdown_report(
     co_change_warnings: Optional[List[Any]] = None,
     interaction_findings: Optional[List[Any]] = None,
     test_selection: Optional[Any] = None,
+    deployment_impact: Optional[Any] = None,
 ) -> str:
     """
     Renders a scannable, developer-friendly Markdown report for GitHub PR comments.
@@ -36,6 +37,7 @@ def render_pr_markdown_report(
     co_changes = co_change_warnings if co_change_warnings is not None else summary_data.get("co_change_warnings", [])
     interactions = interaction_findings if interaction_findings is not None else summary_data.get("interaction_findings", [])
     test_sel = test_selection if test_selection is not None else summary_data.get("test_selection")
+    deploy_imp = deployment_impact if deployment_impact is not None else summary_data.get("deployment_impact")
 
     lines = [
         marker,
@@ -46,6 +48,19 @@ def render_pr_markdown_report(
         f"| **{risk_badge}** | **`{run.overall_score:.1f} / 100`** | **`{len(flagged_findings)}`** | **`{len(findings)}`** |",
         "",
     ]
+
+    # Deployment Impact Forecast
+    if deploy_imp:
+        tier = deploy_imp.get("impact_tier", "Isolated")
+        services = deploy_imp.get("affected_services", [])
+        endpoints = deploy_imp.get("affected_endpoints", [])
+        lines.extend([
+            "### 🚀 Deployment Impact Forecast",
+            f"- **Impact Tier:** `{tier}`",
+            f"- **Affected Services:** {', '.join(f'`{s}`' for s in services) if services else '_None (Internal)_'}",
+            f"- **Exposed Endpoints:** {', '.join(f'`{e}`' for e in endpoints) if endpoints else '_None_'}",
+            "",
+        ])
 
     # Prioritized CI Test Selection
     if test_sel and test_sel.get("command"):
@@ -136,7 +151,13 @@ def render_pr_markdown_report(
             lines.append(f"- **Why it's risky:** {why_risky}")
             lines.append(f"- **How to fix:** {how_to_fix}")
             if f.callers:
-                lines.append(f"- **Affected Callers:** {', '.join(f'`{c}`' for c in f.callers[:5])}")
+                verifs = getattr(f, "caller_verifications", {}) or {}
+                caller_items = []
+                for c in f.callers[:6]:
+                    status = verifs.get(c, "static_only")
+                    tag = "🟢 verified" if status == "runtime_verified" else "🔵 dynamic" if status == "dynamic_only" else "⚪ static"
+                    caller_items.append(f"`{c}` ({tag})")
+                lines.append(f"- **Blast Radius Callers:** {', '.join(caller_items)}")
             lines.append("")
 
             lines.append("#### Reviewer Checklist")
@@ -166,6 +187,10 @@ def post_or_update_pr_report(
     findings: List[HunkRiskFinding],
     repo: Repository,
     github_token: Optional[str] = None,
+    co_change_warnings: Optional[List[Any]] = None,
+    interaction_findings: Optional[List[Any]] = None,
+    test_selection: Optional[Any] = None,
+    deployment_impact: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Posts the report as a GitHub PR comment, updating the existing comment if one exists.
@@ -176,7 +201,15 @@ def post_or_update_pr_report(
         logger.info("No GITHUB_TOKEN configured; skipping remote comment posting.")
         return None
 
-    report_markdown = render_pr_markdown_report(run, findings, repo)
+    report_markdown = render_pr_markdown_report(
+        run,
+        findings,
+        repo,
+        co_change_warnings=co_change_warnings,
+        interaction_findings=interaction_findings,
+        test_selection=test_selection,
+        deployment_impact=deployment_impact,
+    )
     marker = f"<!-- difflens-report:pr-{run.pr_number} -->"
     headers = {
         "Authorization": f"Bearer {token}",

@@ -18,6 +18,10 @@ import {
   Zap,
   GitCompare,
   TrendingDown,
+  Globe,
+  Server,
+  Workflow,
+  Radio,
 } from "lucide-react";
 
 interface CoChangeWarning {
@@ -52,6 +56,20 @@ interface TestSelection {
   runnable_command: string;
 }
 
+interface DeploymentImpact {
+  affected_services: string[];
+  affected_endpoints: string[];
+  affected_workflows: string[];
+  impact_tier: string;
+}
+
+interface RuntimeBlastRadius {
+  total_runtime_verified?: number;
+  total_static_only?: number;
+  total_dynamic_only?: number;
+  confidence?: number;
+}
+
 interface RegressionSignals {
   bug_fix_rates?: Record<string, number>;
   co_change_warnings?: CoChangeWarning[];
@@ -69,6 +87,7 @@ interface HunkFinding {
   domain_tags: string[];
   fan_in: number;
   callers: string[];
+  caller_verifications?: Record<string, string>;
   coverage_score: number;
   coverage_source: string;
   uncovered_lines: number[];
@@ -100,6 +119,8 @@ interface RunDetail {
     regression_signals?: RegressionSignals;
     interaction_findings?: InteractionFinding[];
     test_selection?: TestSelection;
+    deployment_impact?: DeploymentImpact;
+    runtime_blast_radius?: RuntimeBlastRadius;
   };
   findings: HunkFinding[];
   created_at: string;
@@ -162,6 +183,8 @@ export default function RunDetailPage() {
   const testSelection = run.summary?.test_selection;
   const coChangeWarnings = run.summary?.regression_signals?.co_change_warnings || [];
   const interactionFindings = run.summary?.interaction_findings || [];
+  const deploymentImpact = run.summary?.deployment_impact;
+  const runtimeBlast = run.summary?.runtime_blast_radius;
 
   return (
     <div className="space-y-8 pb-12">
@@ -192,6 +215,17 @@ export default function RunDetailPage() {
             <span>Status: {run.status.toUpperCase()}</span>
             <span>•</span>
             <span>{run.findings.length} Hunk(s) Analyzed</span>
+            {runtimeBlast && (
+              <>
+                <span>•</span>
+                <span className="text-accent flex items-center space-x-1">
+                  <Radio className="w-3.5 h-3.5 animate-pulse" />
+                  <span>
+                    Trace Confidence: {Math.round((runtimeBlast.confidence ?? 0.5) * 100)}%
+                  </span>
+                </span>
+              </>
+            )}
           </div>
         </div>
 
@@ -214,9 +248,92 @@ export default function RunDetailPage() {
             <span>Change Intelligence & Prioritized CI Execution</span>
           </h2>
           <span className="text-xs font-mono text-slate-400">
-            Deterministic blast-radius & git history signals
+            Runtime-verified blast radius & deployment impact
           </span>
         </div>
+
+        {/* Lightweight Deployment Impact Forecast Card */}
+        {deploymentImpact && (
+          <div className="bg-surface rounded-xl border border-border p-6 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
+                  <Globe className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-sm font-semibold text-white">Deployment Impact Forecast</h3>
+                    <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 font-bold uppercase">
+                      Tier: {deploymentImpact.impact_tier}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Maps changed symbols and upstream callers to exposed endpoints, services, and workflows.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 text-xs">
+              {/* Affected Services */}
+              <div className="p-3.5 rounded-lg bg-background border border-border space-y-2">
+                <div className="flex items-center space-x-1.5 text-slate-300 font-semibold">
+                  <Server className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Affected Services</span>
+                </div>
+                {deploymentImpact.affected_services.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {deploymentImpact.affected_services.map((svc) => (
+                      <span key={svc} className="px-2 py-0.5 rounded bg-[#0B1020] border border-border text-slate-200 font-mono text-[11px]">
+                        {svc}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-slate-500 text-[11px]">No services directly exposed</div>
+                )}
+              </div>
+
+              {/* Exposed Endpoints */}
+              <div className="p-3.5 rounded-lg bg-background border border-border space-y-2">
+                <div className="flex items-center space-x-1.5 text-slate-300 font-semibold">
+                  <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Exposed Endpoints</span>
+                </div>
+                {deploymentImpact.affected_endpoints.length > 0 ? (
+                  <div className="space-y-1">
+                    {deploymentImpact.affected_endpoints.slice(0, 4).map((ep) => (
+                      <div key={ep} className="text-emerald-300 font-mono text-[11px] truncate">
+                        {ep}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-slate-500 text-[11px]">No public endpoints reachable</div>
+                )}
+              </div>
+
+              {/* Affected Workflows */}
+              <div className="p-3.5 rounded-lg bg-background border border-border space-y-2">
+                <div className="flex items-center space-x-1.5 text-slate-300 font-semibold">
+                  <Workflow className="w-3.5 h-3.5 text-amber-400" />
+                  <span>CI/CD Workflows</span>
+                </div>
+                {deploymentImpact.affected_workflows.length > 0 ? (
+                  <div className="space-y-1">
+                    {deploymentImpact.affected_workflows.map((wf) => (
+                      <div key={wf} className="text-amber-300 font-mono text-[11px] truncate">
+                        {wf.split("/").pop()}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-slate-500 text-[11px]">Standard PR check only</div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Prioritized CI Test Selection Card */}
         {testSelection && testSelection.runnable_command && (
@@ -379,6 +496,8 @@ export default function RunDetailPage() {
             } catch (e) {}
           }
 
+          const callerVerifs = f.caller_verifications || {};
+
           return (
             <div
               key={f.id}
@@ -430,6 +549,49 @@ export default function RunDetailPage() {
 
               {/* Card Body */}
               <div className="p-6 space-y-6">
+                {/* Caller Breakdown with Runtime vs Static Tags */}
+                {f.callers && f.callers.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center space-x-1.5">
+                      <Radio className="w-3.5 h-3.5 text-accent" />
+                      <span>Upstream Callers & Verification Status</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {f.callers.map((c, cIdx) => {
+                        const status = callerVerifs[c] || "static_only";
+                        const isVerified = status === "runtime_verified";
+                        const isDynamic = status === "dynamic_only";
+                        return (
+                          <div
+                            key={cIdx}
+                            className={`inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-xs font-mono border ${
+                              isVerified
+                                ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+                                : isDynamic
+                                ? "bg-blue-500/10 border-blue-500/30 text-blue-300"
+                                : "bg-background border-border text-slate-400"
+                            }`}
+                          >
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full ${
+                                isVerified
+                                  ? "bg-emerald-400"
+                                  : isDynamic
+                                  ? "bg-blue-400"
+                                  : "bg-slate-500"
+                              }`}
+                            />
+                            <span>{c}</span>
+                            <span className="text-[10px] opacity-75">
+                              ({isVerified ? "runtime verified" : isDynamic ? "dynamic" : "static only"})
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 {/* Structured Explanation */}
                 {parsedExp ? (
                   <div className="space-y-4">

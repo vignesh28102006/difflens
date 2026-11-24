@@ -1,5 +1,5 @@
 import math
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 from pydantic import BaseModel, Field
 
 
@@ -29,6 +29,13 @@ class HunkMetrics(BaseModel):
         ge=0,
         description="Total lines of code changed (added + modified) in hunk"
     )
+    effective_fan_in: Optional[float] = Field(
+        default=None,
+        description="Runtime-verified weighted effective fan-in (discounts dead/static-only callers)"
+    )
+    runtime_verified_fan_in: Optional[int] = None
+    static_only_fan_in: Optional[int] = None
+    dynamic_only_fan_in: Optional[int] = None
 
 
 class ScorerConfig(BaseModel):
@@ -56,9 +63,14 @@ def calculate_hunk_risk(
         + w_churn * (ΔLOC_h / L_0)
     ))) + regression_boost
     """
+    active_fan_in = (
+        metrics.effective_fan_in
+        if metrics.effective_fan_in is not None
+        else float(metrics.fan_in)
+    )
     exponent = (
         config.w_dom * metrics.domain_sensitivity
-        + config.w_blast * math.log(1.0 + metrics.fan_in)
+        + config.w_blast * math.log(1.0 + max(0.0, active_fan_in))
         + config.w_cov * (1.0 - metrics.coverage)
         + config.w_churn * (metrics.delta_loc / config.l_0)
     )

@@ -124,6 +124,7 @@ class HunkRiskFinding(Base):
     domain_tags = Column(JSON, default=list, nullable=False)
     fan_in = Column(Integer, default=0, nullable=False)
     callers = Column(JSON, default=list, nullable=False)
+    caller_verifications = Column(JSON, default=dict, nullable=False)
     coverage_score = Column(Float, default=0.0, nullable=False)
     coverage_source = Column(String(50), default="none", nullable=False)
     uncovered_lines = Column(JSON, default=list, nullable=False)
@@ -145,6 +146,7 @@ class HunkRiskFinding(Base):
             "domain_tags": self.domain_tags,
             "fan_in": self.fan_in,
             "callers": self.callers,
+            "caller_verifications": self.caller_verifications or {},
             "coverage_score": self.coverage_score,
             "coverage_source": self.coverage_source,
             "uncovered_lines": self.uncovered_lines,

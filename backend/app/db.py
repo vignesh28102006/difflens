@@ -16,9 +16,21 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_db(engine_override: Optional[Engine] = None) -> None:
-    """Initializes schema and tables."""
+    """Initializes schema and tables, running safe column migrations if needed."""
     target_engine = engine_override or engine
     Base.metadata.create_all(bind=target_engine)
+
+    # Safe column migration for SQLite dev DB
+    try:
+        from sqlalchemy import text
+        with target_engine.connect() as conn:
+            res = conn.execute(text("PRAGMA table_info(hunk_risk_findings)"))
+            cols = [row[1] for row in res.fetchall()]
+            if cols and "caller_verifications" not in cols:
+                conn.execute(text("ALTER TABLE hunk_risk_findings ADD COLUMN caller_verifications JSON DEFAULT '{}'"))
+                conn.commit()
+    except Exception:
+        pass
 
 
 def get_db() -> Generator[Session, None, None]:

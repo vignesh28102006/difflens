@@ -128,6 +128,18 @@ def seed_demo_data() -> None:
                 "estimated_time_reduction_percent": 78,
                 "runnable_command": "pytest tests/test_auth.py tests/test_routes.py -v",
             },
+            "deployment_impact": {
+                "affected_services": ["api", "worker"],
+                "affected_endpoints": ["POST /v1/charge", "POST /webhooks/stripe", "POST /api/payments"],
+                "affected_workflows": [".github/workflows/deploy-api.yml"],
+                "impact_tier": "Public-API",
+            },
+            "runtime_blast_radius": {
+                "total_runtime_verified": 4,
+                "total_static_only": 2,
+                "total_dynamic_only": 0,
+                "confidence": 0.85,
+            },
         }
 
         pr142_explanation = json.dumps({
@@ -187,6 +199,14 @@ def seed_demo_data() -> None:
                 "jobs/reconciliation.py:verify_batch_token",
                 "admin/views.py:admin_override",
             ],
+            caller_verifications={
+                "api/routes.py:handle_payment_webhook": "runtime_verified",
+                "api/routes.py:refund_transaction": "runtime_verified",
+                "api/routes.py:create_subscription": "runtime_verified",
+                "middleware/auth.py:authenticate_request": "runtime_verified",
+                "jobs/reconciliation.py:verify_batch_token": "static_only",
+                "admin/views.py:admin_override": "static_only",
+            },
             coverage_score=0.15,
             coverage_source="coverage.json",
             uncovered_lines=[24, 25, 26, 27, 28, 29, 30, 31, 35, 36],
